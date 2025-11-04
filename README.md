@@ -9,8 +9,10 @@ Here I calculated the (Kubo transformed) correlation function for harmonic, slig
 - Classical mechanics (propagating classical states with verlet algorithm)
 - Ring polymer molecular dynamics (Metropolis sampling + verlet propagator)
 
-The folder named RPMD_Correlation_MC is my initial attemp where I used a (very long) Metropolis Monte Carlo pre-equilibration before each ring polymer sampling to achieve Boltzmann statistics. This is clearly suboptimal. Also I propagated the ring polymer dynamics using the naive primitive velocity verlet algorithm.
+It uses an Andersen thermostat which kicks the system after each run is completed, and a Boltzmann statistics is naturally achieved by using the end configuration of the previous run as the starting configuration of the next run. It propagates the dynamics using a verlet propagator, which is modified to transform the real coordinates to the normal mode coordinates so the internal vibrations of the polymer can be propagated exactly.
 
-My second attempt is in RPMD_Correlation_Andersen, where the Boltzmann statistics is achieved by kicking the system with a Andersen thermostat every time after each sampling step. The random Boltzmann sampling of coordinates is naturally achieved by starting each simulation from the final position of the previous run. I also propagated the internal vibration of polymers exactly by transforming into the normal mode coordinates. This is much more accurate, and FFT algorithm can be used, which is fast.
+The notebook with numba runs much faster, but the one without numba has more captions and the codes are better structured.
 
-Each folder has two versions: one with numba and one without numba. The numba version runs much faster, but the codes are less structured (ugly).
+I also included an interactive python script which allows you to see the sampling happens in real time. This is much less efficient (because I need to delibrately add delay to the verlet propagator so the movement of the polymer is visible) but quite entertaining to look at!
+
+The scripts in the MC folder is my initial attempt. It uses Metropolis Monte Carlo so it's very inefficient if the number of beads is large. No need to look at it! It's there just for reference.
