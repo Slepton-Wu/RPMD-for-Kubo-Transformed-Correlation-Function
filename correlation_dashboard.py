@@ -1,16 +1,3 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""
-correlation_dashboard_v15.py
-
-- Uses user's robust exact() that takes (n_max, beta, coeffs, order_i, order_j, t_end, delta_t).
-- Coefficient sliders (c1..c4) affect the exact curve after clicking Apply.
-- Initial polymer configuration (cosine ring + small noise) shown at launch (no Reset needed).
-- Single Start/Pause toggle + Reset.
-- N shown on the correlation plot is the total number of samples in the history mean:
-    N = history_count * len(history_mean)   (0 if no history yet)
-"""
-
 import threading, time, math
 import numpy as np
 import matplotlib.pyplot as plt
