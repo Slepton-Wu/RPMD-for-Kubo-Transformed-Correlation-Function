@@ -1,118 +1,79 @@
-import threading, time, math
+import threading, time
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.widgets import Slider, Button
+from numpy.linalg import eigh
 
-# ---- Polynomial potential and its derivative ----
+# ---------------- Polynomial potential ----------------
 def V_poly(x, c1, c2, c3, c4):
     return c1*x + c2*(x**2) + c3*(x**3) + c4*(x**4)
 
-def dV_poly(x, c1, c2, c3, c4):
-    return c1 + 2*c2*x + 3*c3*(x**2) + 4*c4*(x**3)
-
-# ===== Exact quantum correlation (robust, coefficient-based) =====
-import numpy as _np
-from numpy.linalg import eigh
-hbar = 1.0
-m = 1.0  # mass for exact()
-
-def exact(n_max, beta, coeffs, order_i=1, order_j=1, t_end=20, delta_t=0.02): 
-    max_order = int(max(order_i, order_j, len(coeffs)))
-    dim = n_max + max_order
-    a = _np.zeros((dim, dim))
-    for n in range(1, dim):
-        a[n-1, n] = _np.sqrt(n)
-    a_dag = a.T
-    x = _np.sqrt(hbar/(2*m)) * (a + a_dag)
-    x_powers = [x]
-    for i in range(0, max_order-1):
-        x_powers.append(x_powers[i] @ x)
-    V = _np.zeros((dim, dim))
-    for i in range(0, len(coeffs)):
-        V += coeffs[i] * x_powers[i]
-    P = _np.sqrt(m * hbar / 2) * (a_dag - a)
-    T = -(P @ P) / (2 * m)
-    H = (T + V)[:n_max, :n_max]
-    E, psi = eigh(H)
-    Boltz = _np.exp(-beta * E); Z = _np.sum(Boltz)
-    A = x_powers[order_i-1][:n_max, :n_max]; A_mel = psi.T @ A @ psi
-    B = x_powers[order_j-1][:n_max, :n_max]; B_mel = psi.T @ B @ psi
-    Em, En = _np.meshgrid(E, E, indexing='ij'); dE = Em - En; eps = 1e-10
-    with _np.errstate(divide='ignore', invalid='ignore'):
-        W = _np.where(_np.abs(dE) < eps, Boltz[:, None], (Boltz[None, :] - Boltz[:, None]) / (beta * dE))
-    AB = A_mel * B_mel.T
-    times = _np.arange(0, t_end, delta_t)
-    phases = _np.exp(1j * dE[None, :, :] * times[:, None, None] / hbar)
-    C_t = _np.einsum('ijk,jk,jk->i', phases, W, AB).real / Z
-    return times, C_t
-
-
-# -------------- Normal-mode helpers (exact propagation of internal modes) -------------
 def force_value(coeffs, x):
-    # Force = -dV/dx for V(x) = c1 x + c2 x^2 + c3 x^3 + c4 x^4
     c1, c2, c3, c4 = coeffs
     return -(c1 + 2.0*c2*x + 3.0*c3*(x**2) + 4.0*c4*(x**3))
 
+# ---------------- Exact quantum correlation ----------------
+hbar = 1.0
+m_exact = 1.0  # mass used inside exact()
+
+def exact(n_max, beta, coeffs, order_i=1, order_j=1, t_end=20, delta_t=0.02):
+    max_order = int(max(order_i, order_j, len(coeffs)))
+    dim = n_max + max_order
+    a = np.zeros((dim, dim))
+    for n in range(1, dim):
+        a[n-1, n] = np.sqrt(n)
+    a_dag = a.T
+    x = np.sqrt(hbar/(2*m_exact)) * (a + a_dag)
+    x_powers = [x]
+    for i in range(0, max_order-1):
+        x_powers.append(x_powers[i] @ x)
+    V = np.zeros((dim, dim))
+    for i in range(0, len(coeffs)):
+        V += coeffs[i] * x_powers[i]
+    P = np.sqrt(m_exact * hbar / 2) * (a_dag - a)
+    T = -(P @ P) / (2 * m_exact)
+    H = (T + V)[:n_max, :n_max]
+    E, psi = eigh(H)
+    Boltz = np.exp(-beta * E); Z = np.sum(Boltz)
+    A = x_powers[order_i-1][:n_max, :n_max]; A_mel = psi.T @ A @ psi
+    B = x_powers[order_j-1][:n_max, :n_max]; B_mel = psi.T @ B @ psi
+    Em, En = np.meshgrid(E, E, indexing='ij'); dE = Em - En; eps = 1e-10
+    with np.errstate(divide='ignore', invalid='ignore'):
+        W = np.where(np.abs(dE) < eps, Boltz[:, None], (Boltz[None, :] - Boltz[:, None]) / (beta * dE))
+    AB = A_mel * B_mel.T
+    times = np.arange(0, t_end, delta_t)
+    phases = np.exp(1j * dE[None, :, :] * times[:, None, None] / hbar)
+    C_t = np.einsum('ijk,jk,jk->i', phases, W, AB).real / Z
+    return times, C_t
+
+# ---------------- Normal-mode helpers ----------------
 def normal_mode_frequencies(k_eff, n, m):
-    # omega_k = sqrt( (2 - 2 cos(2πk/n)) * k_eff / m )
     k = np.arange(n, dtype=float)
     return np.sqrt((2.0 - 2.0*np.cos(2.0*np.pi*k/n)) * (k_eff / m))
 
 def mode_propagation(x, v, omega, delta_t):
-    # Transform to normal coordinates (complex arrays from FFT)
     Xk = np.fft.fft(x)
     Vk = np.fft.fft(v)
-
     Xk_next = np.empty_like(Xk)
     Vk_next = np.empty_like(Vk)
-
-    # k=0 mode (omega=0)
     Xk_next[0] = Xk[0] + Vk[0] * delta_t
     Vk_next[0] = Vk[0]
-
-    # k>0 modes
     omega_pos = omega[1:]
     coswt = np.cos(omega_pos * delta_t)
     sinwt = np.sin(omega_pos * delta_t)
     Xk_pos = Xk[1:]
     Vk_pos = Vk[1:]
-    # Avoid division by zero for any accidental zeros (shouldn't happen except k=0 handled above)
     with np.errstate(divide='ignore', invalid='ignore'):
         Xk_next[1:] = Xk_pos * coswt + Vk_pos * (sinwt / np.where(omega_pos==0.0, 1.0, omega_pos))
         Vk_next[1:] = Vk_pos * coswt - Xk_pos * (omega_pos * sinwt)
-
-    # Back to real space
     x_next = np.fft.ifft(Xk_next).real
     v_next = np.fft.ifft(Vk_next).real
     return x_next, v_next
 
-# -------------- Ring-polymer integrator -------------
-def polymer_verlet_core(q, v, beta_n, n_steps, dt, n, force_func, m, c_params):
-    """Velocity-Verlet for ring polymer (ω_P = 1/beta_n). Returns series for n_steps."""
-    omegaP = 1.0 / max(1e-16, beta_n)
-    q_series = np.empty((n_steps, n), dtype=float)
-    v_series = np.empty((n_steps, n), dtype=float)
-    qk = q.copy(); vk = v.copy()
-    for t in range(n_steps):
-        q_plus = np.roll(qk, -1); q_minus = np.roll(qk, 1)
-        F_spring = -m*(omegaP**2) * (2.0*qk - q_plus - q_minus)
-        F_pot = -force_func(qk, *c_params)
-        F = F_spring + F_pot
-        v_half = vk + 0.5*dt*F/m
-        q_new = qk + dt*v_half
-        q_plus2 = np.roll(q_new, -1); q_minus2 = np.roll(q_new, 1)
-        F_spring_new = -m*(omegaP**2) * (2.0*q_new - q_plus2 - q_minus2)
-        F_pot_new = -force_func(q_new, *c_params)
-        F_new = F_spring_new + F_pot_new
-        v_new = v_half + 0.5*dt*F_new/m
-        q_series[t] = q_new; v_series[t] = v_new
-        qk, vk = q_new, v_new
-    return q_series, v_series
-
-# ----------------- Worker state ---------------------
+# ---------------- Runner ----------------
 class Runner:
     def __init__(self):
-        # parameters
+        # Params
         self.beta = 1.0
         self.N = 80
         self.c1, self.c2, self.c3, self.c4 = 0.0, 0.5, 0.0, 0.0
@@ -120,32 +81,31 @@ class Runner:
         self.dt = 0.05
         self.t_end = 20.0
         self.m = 1.0
-        self.delay_ms = 4     # visual pacing (0.5–5 ms slider)
-        self.n_max = 64       # for exact()
+        self.delay_ms = 4      # UI slider 0.5–5 ms
+        self.n_max = 64
 
-        # internal
+        # State
         self._lock = threading.Lock()
         self._stop = False
-        self.running = False   # start stopped
-        self._needs_reset = False  # initial config already generated below
+        self.running = False
+        self._needs_reset = False
+        self._thermalising = False
 
-        # initial configuration: cosine ring + noise
+        # Initial config: cosine ring
         n0 = self.N
         k0 = np.arange(n0)
-        self.q = 0.1 + np.cos(2.0*np.pi*k0/n0)
+        self.q = np.cos(2.0*np.pi*k0/n0)
         beta_n0 = self.beta / n0
         self.v = np.random.default_rng().normal(0.0, 1.0/np.sqrt(max(1e-16, beta_n0*self.m)), size=n0)
         self.latest_q = self.q.copy()
 
-        # CF histories
+        # Correlators
         self.history_mean = None
         self.history_count = 0
-
-        # current run curves
         self.cur_t = None
         self.cur_cf = None
 
-        # exact curve (compute for initial params so line shows at launch)
+        # Exact curve for initial params
         tt, Ct = exact(self.n_max, self.beta, [self.c1, self.c2, self.c3, self.c4],
                        order_i=self.i_order, order_j=self.j_order,
                        t_end=self.t_end, delta_t=self.dt)
@@ -162,11 +122,47 @@ class Runner:
             self.dt = float(dt)
             self.delay_ms = int(delay_ms)
             self.n_max = int(n_max)
-            # do not force reset here; user controls Reset explicitly
 
     def stop(self):
         with self._lock:
             self._stop = True
+
+    def thermalise(self, cycles=10):
+        # Run several fast cycles without recording correlation or updating plots live.
+        with self._lock:
+            if self._thermalising:
+                return
+            self._thermalising = True
+            was_running = self.running
+            self.running = False
+            beta = self.beta; mloc = self.m
+            c1, c2, c3, c4 = self.c1, self.c2, self.c3, self.c4
+            t_end = self.t_end; dt = self.dt
+            if self.q is None or self.v is None or len(self.q) != self.N:
+                n = self.N; beta_n = beta / n
+                k = np.arange(n)
+                self.q = np.cos(2.0*np.pi*k/n)
+                self.v = np.random.default_rng().normal(0.0, 1.0/np.sqrt(max(1e-16, beta_n*mloc)), size=n)
+            q = self.q.copy(); v = self.v.copy()
+            n = len(q); beta_n = beta / n
+        rng = np.random.default_rng()
+        n_steps = int(max(1, round(t_end / dt)))
+        k_eff = mloc / max(1e-16, beta_n*beta_n)
+        omega = normal_mode_frequencies(k_eff, n, mloc)
+        coeffs = [c1, c2, c3, c4]
+        for cyc in range(cycles):
+            v = rng.normal(0.0, 1.0/np.sqrt(max(1e-16, beta_n*mloc)), size=n)
+            for _ in range(n_steps):
+                f = force_value(coeffs, q)
+                v_half = v + 0.5 * dt * f / mloc
+                x_new, v_mode = mode_propagation(q, v_half, omega, dt)
+                f_new = force_value(coeffs, x_new)
+                v = v_mode + 0.5 * dt * f_new / mloc
+                q = x_new
+        with self._lock:
+            self.q = q; self.v = v; self.latest_q = q.copy()
+            self._thermalising = False
+            self.running = was_running
 
     def run(self):
         rng = np.random.default_rng()
@@ -175,10 +171,8 @@ class Runner:
                 if self._stop:
                     return
                 if not self.running:
-                    pass_flag = True
-                else:
-                    pass_flag = False
-                paused = not self.running
+                    time.sleep(0.05)
+                    continue
                 needs_reset = self._needs_reset
                 beta = self.beta; N = self.N; mloc = self.m
                 c1, c2, c3, c4 = self.c1, self.c2, self.c3, self.c4
@@ -186,45 +180,34 @@ class Runner:
                 t_end = self.t_end; dt = self.dt; delay_ms = self.delay_ms
                 n_max = self.n_max
 
-            if paused:
-                time.sleep(0.05)
-                continue
-
-            # Prepare state if needed
             if needs_reset or self.q is None or self.v is None or len(self.q) != N:
                 n = N; beta_n = beta / n
                 k = np.arange(n)
-                self.q = np.cos(2.0*np.pi*k/n) + rng.normal(0.0, 0.1, size=n)
+                self.q = np.cos(2.0*np.pi*k/n)
                 self.v = rng.normal(0.0, 1.0/np.sqrt(max(1e-16, beta_n*mloc)), size=n)
                 self.latest_q = self.q.copy()
                 self.cur_t = None; self.cur_cf = None
                 self._needs_reset = False
 
-            # precompute exact each run with current parameters
-            n = len(self.q); beta_n = beta / n
-            n_steps = int(max(1, round(t_end / dt)))
+            # Precompute exact each run
             coeffs = [c1, c2, c3, c4]
             tt, Ct = exact(n_max, beta, coeffs, order_i=i_ord, order_j=j_ord, t_end=t_end, delta_t=dt)
             self.exact_t = tt
             self.exact_curve = Ct
 
-            # start a run
+            # One run
+            n = len(self.q); beta_n = beta / n
+            n_steps = int(max(1, round(t_end / dt)))
             x0 = float(np.mean(self.q)); x0i = x0**i_ord
             t_list = [0.0]; cf_list = [x0i * (x0**j_ord)]
+            k_eff = mloc / max(1e-16, beta_n*beta_n)
+            omega = normal_mode_frequencies(k_eff, n, mloc)
 
             for step in range(1, n_steps+1):
-                # exact-internal-mode propagation (normal modes), with external-force half-kicks
-                # spring constant for inter-bead coupling: k_eff = m / beta_n^2
-                k_eff = mloc / max(1e-16, beta_n*beta_n)
-                omega = normal_mode_frequencies(k_eff, n, mloc)
-                # half-kick with external force
-                f = force_value([c1, c2, c3, c4], self.q)
+                f = force_value(coeffs, self.q)
                 v_half = self.v + 0.5 * dt * f / mloc
-                # exact propagation of internal modes for dt
                 x_new, v_mode = mode_propagation(self.q, v_half, omega, dt)
-                # external force at new positions
-                f_new = force_value([c1, c2, c3, c4], x_new)
-                # second half-kick
+                f_new = force_value(coeffs, x_new)
                 v_new = v_mode + 0.5 * dt * f_new / mloc
                 self.q, self.v = x_new, v_new
                 self.latest_q = self.q.copy()
@@ -242,7 +225,7 @@ class Runner:
                     if not self.running or self._stop:
                         break
 
-            # update running mean at end of run
+            # Update history mean
             L = len(cf_list)
             cf_arr = np.array(cf_list, float)
             if self.history_mean is None or self.history_mean.size != L:
@@ -253,13 +236,14 @@ class Runner:
                 w = 1.0 / self.history_count
                 self.history_mean = (1.0 - w) * self.history_mean + w * cf_arr
 
-            # keep end config; redraw velocities for next run
+            # Refresh velocities for next run
             self.v = rng.normal(0.0, 1.0/np.sqrt(max(1e-16, beta_n*mloc)), size=n)
 
+# ---------------- Main / UI ----------------
 def main():
     r = Runner()
 
-    # Figure 1: polymer configuration + potential
+    # Figure 1: polymer config + potential
     fig1, ax1 = plt.subplots(figsize=(7,4))
     line_V, = ax1.plot([], [], lw=1.5, label=r"$V(x)$")
     ring_line, = ax1.plot([], [], "--", lw=1.2, label="bead ring")
@@ -305,9 +289,10 @@ def main():
     s_delay= Slider(ax_delay,r"Delay (ms)",                 0.5,    10,     valinit=r.delay_ms, valstep=0.1)
     s_nmax = Slider(ax_nmax, r"$n_{\mathrm{max}}$ (exact)", 8,    256,    valinit=r.n_max,    valstep=1)
 
-    ax_apply=fig3.add_axes([0.10,0.22,0.18,0.06]); b_apply=Button(ax_apply,"Apply Params")
-    ax_toggle=fig3.add_axes([0.32,0.22,0.18,0.06]); b_toggle=Button(ax_toggle,"Start")
-    ax_reset=fig3.add_axes([0.54,0.22,0.18,0.06]); b_reset=Button(ax_reset,"Reset (new x_init)")
+    ax_apply=fig3.add_axes([0.08,0.22,0.16,0.06]); b_apply=Button(ax_apply,"Apply")
+    ax_toggle=fig3.add_axes([0.26,0.22,0.16,0.06]); b_toggle=Button(ax_toggle,"Start")
+    ax_reset=fig3.add_axes([0.44,0.22,0.18,0.06]); b_reset=Button(ax_reset,"Reset")
+    ax_therm=fig3.add_axes([0.64,0.22,0.20,0.06]); b_therm=Button(ax_therm,"Thermalise")
 
     def on_apply(evt):
         r.set_params(s_beta.val, int(s_N.val), s_c1.val, s_c2.val, s_c3.val, s_c4.val,
@@ -325,27 +310,37 @@ def main():
 
     def on_reset(evt):
         with r._lock:
-            # Clear histories & current curve; recompute exact; request new init config
             r.history_mean = None
             r.history_count = 0
             r.cur_t = None
             r.cur_cf = None
-            # recompute exact on current settings
             coeffs = [r.c1, r.c2, r.c3, r.c4]
             tt, Ct = exact(r.n_max, r.beta, coeffs, order_i=r.i_order, order_j=r.j_order, t_end=r.t_end, delta_t=r.dt)
             r.exact_t = tt
             r.exact_curve = Ct
-            # ask worker to regenerate cosine+noise configuration
-            r._needs_reset = True
+            # regenerate a fresh cosine+noise configuration immediately
+            n = r.N
+            k = np.arange(n)
+            r.q = np.cos(2.0*np.pi*k/n)
+            beta_n = r.beta / n
+            r.v = np.random.default_rng().normal(0.0, 1.0/np.sqrt(max(1e-16, beta_n*r.m)), size=n)
+            r.latest_q = r.q.copy()
+            r._needs_reset = False
 
-    b_apply.on_clicked(on_apply); b_toggle.on_clicked(on_toggle); b_reset.on_clicked(on_reset)
+    def on_thermalise(evt):
+        def _run():
+            r.thermalise(cycles=10)
+        th2 = threading.Thread(target=_run, daemon=True)
+        th2.start()
+
+    b_apply.on_clicked(on_apply); b_toggle.on_clicked(on_toggle); b_reset.on_clicked(on_reset); b_therm.on_clicked(on_thermalise)
 
     # Worker
     th = threading.Thread(target=r.run, daemon=True); th.start()
 
     # Refresh
     def refresh(_evt):
-        # Figure 1
+        # Figure 1: potential + ring
         xmin,xmax=-4.0,4.0
         xs=np.linspace(xmin,xmax,800)
         Vx=V_poly(xs, r.c1, r.c2, r.c3, r.c4); line_V.set_data(xs,Vx); ax1.set_xlim(xmin,xmax)
@@ -360,7 +355,7 @@ def main():
             y_min=min(np.nanmin(Vx), y0-2.2*amp); y_max=max(np.nanmax(Vx), y0+2.2*amp)
             if np.isfinite(y_min) and np.isfinite(y_max): ax1.set_ylim(y_min,y_max)
 
-        # Figure 2
+        # Figure 2: correlation
         if r.exact_t is not None and r.exact_curve is not None:
             line_exact.set_data(r.exact_t, r.exact_curve)
         else:
