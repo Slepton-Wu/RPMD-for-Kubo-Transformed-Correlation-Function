@@ -15,4 +15,4 @@ The notebook with numba runs much faster, but the one without numba has more cap
 
 I also included an interactive python script which allows you to see the sampling happens in real time. This is much less efficient (because I need to delibrately add delay to the verlet propagator so the movement of the polymer is visible) but quite entertaining to look at!
 
-The scripts in the MC folder is my initial attempt. It uses Metropolis Monte Carlo so it's very inefficient if the number of beads is large. No need to look at it! It's there just for reference.
+The scripts in the MC folder is my initial attempt. It uses Metropolis Monte Carlo so it's very inefficient if the number of beads is large. No need to look at it! It's there just for reference (and to remind me how poor my coding skill was).
