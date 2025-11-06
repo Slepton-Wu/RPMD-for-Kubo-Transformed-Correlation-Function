@@ -3,11 +3,16 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.widgets import Slider, Button
 from numpy.linalg import eigh
+from numba import njit
+
+# need to install rocket fft (via pip install rocket-fft) so that fft can be performed in numba. Otherwise, you need to remove all the numba stuffs -- but the code will run slower.
 
 # ---------------- Polynomial potential ----------------
+@njit(nopython=True, fastmath=True)
 def V_poly(x, c1, c2, c3, c4):
     return c1*x + c2*(x**2) + c3*(x**3) + c4*(x**4)
 
+@njit(nopython=True, fastmath=True)
 def force_value(coeffs, x):
     c1, c2, c3, c4 = coeffs
     return -(c1 + 2.0*c2*x + 3.0*c3*(x**2) + 4.0*c4*(x**3))
@@ -47,28 +52,47 @@ def exact(n_max, beta, coeffs, order_i=1, order_j=1, t_end=20, delta_t=0.02):
     return times, C_t
 
 # ---------------- Normal-mode helpers ----------------
+@njit(nopython=True, fastmath=True)
 def normal_mode_frequencies(k_eff, n, m):
-    k = np.arange(n, dtype=float)
+    k = np.arange(n)
     return np.sqrt((2.0 - 2.0*np.cos(2.0*np.pi*k/n)) * (k_eff / m))
 
+@njit(nopython=True, fastmath=True)
 def mode_propagation(x, v, omega, delta_t):
+    #Transform to normal coordinates
     Xk = np.fft.fft(x)
     Vk = np.fft.fft(v)
+
     Xk_next = np.empty_like(Xk)
     Vk_next = np.empty_like(Vk)
+
+    #Evolve the omega=0 mode
     Xk_next[0] = Xk[0] + Vk[0] * delta_t
     Vk_next[0] = Vk[0]
+
+    # Evolve the omgea>0 mode
     omega_pos = omega[1:]
-    coswt = np.cos(omega_pos * delta_t)
-    sinwt = np.sin(omega_pos * delta_t)
+    coswt = np.cos(omega_pos*delta_t)
+    sinwt = np.sin(omega_pos*delta_t)
     Xk_pos = Xk[1:]
     Vk_pos = Vk[1:]
-    with np.errstate(divide='ignore', invalid='ignore'):
-        Xk_next[1:] = Xk_pos * coswt + Vk_pos * (sinwt / np.where(omega_pos==0.0, 1.0, omega_pos))
-        Vk_next[1:] = Vk_pos * coswt - Xk_pos * (omega_pos * sinwt)
-    x_next = np.fft.ifft(Xk_next).real
-    v_next = np.fft.ifft(Vk_next).real
+    Xk_next[1:] = Xk_pos * coswt + Vk_pos * (sinwt / omega_pos)
+    Vk_next[1:] = Vk_pos * coswt - Xk_pos * (omega_pos * sinwt)
+    
+    # Transform back to real coordinates
+    x_next = np.fft.ifft(Xk_next, axis=0).real
+    v_next = np.fft.ifft(Vk_next, axis=0).real
     return x_next, v_next
+
+@njit(nopython=True, fastmath=True)
+def propagate(q, v, coeffs, dt, m, omega):
+    f = force_value(coeffs, q)
+    v_half = v + 0.5 * dt * f / m
+    x_new, v_mode = mode_propagation(q, v_half, omega, dt)
+    f_new = force_value(coeffs, x_new)
+    v = v_mode + 0.5 * dt * f_new / m
+    q = x_new
+    return q, v
 
 # ---------------- Runner ----------------
 class Runner:
@@ -81,7 +105,7 @@ class Runner:
         self.dt = 0.05
         self.t_end = 20.0
         self.m = 1.0
-        self.delay_ms = 4      # UI slider 0.5–5 ms
+        self.delay_ms = 4
         self.n_max = 64
 
         # State
@@ -120,7 +144,7 @@ class Runner:
             self.i_order, self.j_order = int(i_ord), int(j_ord)
             self.t_end = float(t_end)
             self.dt = float(dt)
-            self.delay_ms = int(delay_ms)
+            self.delay_ms = float(delay_ms)
             self.n_max = int(n_max)
 
     def stop(self):
@@ -150,15 +174,11 @@ class Runner:
         k_eff = mloc / max(1e-16, beta_n*beta_n)
         omega = normal_mode_frequencies(k_eff, n, mloc)
         coeffs = [c1, c2, c3, c4]
+
         for cyc in range(cycles):
             v = rng.normal(0.0, 1.0/np.sqrt(max(1e-16, beta_n*mloc)), size=n)
             for _ in range(n_steps):
-                f = force_value(coeffs, q)
-                v_half = v + 0.5 * dt * f / mloc
-                x_new, v_mode = mode_propagation(q, v_half, omega, dt)
-                f_new = force_value(coeffs, x_new)
-                v = v_mode + 0.5 * dt * f_new / mloc
-                q = x_new
+                q, v = propagate(q, v, coeffs, dt, mloc, omega)
         with self._lock:
             self.q = q; self.v = v; self.latest_q = q.copy()
             self._thermalising = False
@@ -204,12 +224,7 @@ class Runner:
             omega = normal_mode_frequencies(k_eff, n, mloc)
 
             for step in range(1, n_steps+1):
-                f = force_value(coeffs, self.q)
-                v_half = self.v + 0.5 * dt * f / mloc
-                x_new, v_mode = mode_propagation(self.q, v_half, omega, dt)
-                f_new = force_value(coeffs, x_new)
-                v_new = v_mode + 0.5 * dt * f_new / mloc
-                self.q, self.v = x_new, v_new
+                self.q, self.v = propagate(self.q, self.v, coeffs, dt, mloc, omega)
                 self.latest_q = self.q.copy()
 
                 xc = float(np.mean(self.q))
@@ -286,8 +301,8 @@ def main():
     s_j    = Slider(ax_j,    r"$j$ order",                  0,      4,      valinit=r.j_order,  valstep=1)
     s_tend = Slider(ax_tend, r"$t_{\mathrm{end}}$",         0.1,    200.0,  valinit=r.t_end,    valstep=0.1)
     s_dt   = Slider(ax_dt,   r"$\delta t$ (verlet)",        1e-4,   0.2,    valinit=r.dt,       valstep=1e-4)
-    s_delay= Slider(ax_delay,r"Delay (ms)",                 0.5,    10,     valinit=r.delay_ms, valstep=0.1)
-    s_nmax = Slider(ax_nmax, r"$n_{\mathrm{max}}$ (exact)", 8,    256,    valinit=r.n_max,    valstep=1)
+    s_delay= Slider(ax_delay,r"Delay (ms)",                 0,      10,     valinit=r.delay_ms, valstep=0.1)
+    s_nmax = Slider(ax_nmax, r"$n_{\mathrm{max}}$ (exact)", 8,      256,    valinit=r.n_max,    valstep=1)
 
     ax_apply=fig3.add_axes([0.08,0.22,0.16,0.06]); b_apply=Button(ax_apply,"Apply")
     ax_toggle=fig3.add_axes([0.26,0.22,0.16,0.06]); b_toggle=Button(ax_toggle,"Start")
@@ -296,7 +311,7 @@ def main():
 
     def on_apply(evt):
         r.set_params(s_beta.val, int(s_N.val), s_c1.val, s_c2.val, s_c3.val, s_c4.val,
-                     int(s_i.val), int(s_j.val), s_tend.val, s_dt.val, int(s_delay.val), int(s_nmax.val))
+                     int(s_i.val), int(s_j.val), s_tend.val, s_dt.val, s_delay.val, int(s_nmax.val))
         # recompute exact with current coefficients and settings
         coeffs = [r.c1, r.c2, r.c3, r.c4]
         tt, Ct = exact(r.n_max, r.beta, coeffs, order_i=r.i_order, order_j=r.j_order, t_end=r.t_end, delta_t=r.dt)
